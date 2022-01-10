@@ -16,7 +16,7 @@ from sqlalchemy.util import (
 
 from sqlalchemy.sql.compiler import crud
 
-from .. import Table, types
+from .. import Table, types, MaterializedView
 from .. import engines
 from ..util import compat
 
@@ -624,6 +624,42 @@ class ClickHouseDDLCompiler(compiler.DDLCompiler):
 
         return ' ENGINE = ' + self.process(engine)
 
+    def visit_create_materialized_view(self, create):
+        mv = create.element
+        text = '\nCREATE MATERIALIZED VIEW '
+
+        if create.if_exists:
+            text += 'IF EXISTS '
+
+        text += self.preparer.format_table(mv.inner_table)
+
+        if create.on_cluster:
+            text += (
+                ' ON CLUSTER ' +
+                self.preparer.quote(create.on_cluster)
+            )
+
+        text += ' ('
+
+        separator = ''
+
+        for column in mv.inner_table.columns:
+            processed = self.process(CreateColumn(column))
+            if processed is not None:
+                text += separator
+                separator = ', '
+                text += processed
+
+        text += ')'
+
+        text += self.post_create_table(mv.inner_table)
+
+        text += 'AS ' + self.sql_compiler.process(
+            mv.mv_selectable, literal_binds=True
+        )
+
+        return text
+
     def visit_drop_table(self, drop):
         text = '\nDROP TABLE '
 
@@ -788,6 +824,9 @@ class ClickHouseDialect(default.DefaultDialect):
     construct_arguments = [
         (schema.Table, {
             'data': [],
+            'cluster': None,
+        }),
+        (MaterializedView, {
             'cluster': None,
         }),
         (schema.Column, {
@@ -1031,7 +1070,9 @@ class ClickHouseDialect(default.DefaultDialect):
     @reflection.cache
     def get_table_names(self, connection, schema=None, **kw):
         query = text(
-            "SELECT name FROM system.tables WHERE engine NOT LIKE '%View' "
+            "SELECT name FROM system.tables "
+            "WHERE engine NOT LIKE '%View' "
+            "AND name NOT LIKE '.inner%' "
             "AND database = :database"
         )
 

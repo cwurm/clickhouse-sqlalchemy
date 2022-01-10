@@ -1,11 +1,11 @@
 from sqlalchemy import Table as TableBase
 from sqlalchemy.sql.base import (
-    _bind_or_error,
+    _bind_or_error, DialectKWArgs, Immutable
 )
-
+from sqlalchemy.sql.schema import SchemaItem
+from sqlalchemy.sql.selectable import FromClause
 from clickhouse_sqlalchemy.sql.selectable import (
-    Join,
-    Select,
+    Join, Select
 )
 from . import ddl
 
@@ -43,3 +43,51 @@ class Table(TableBase):
             ch_table._columns = std_table._columns
 
         return ch_table
+
+
+class MaterializedView(DialectKWArgs, SchemaItem, Immutable, FromClause):
+    __visit_name__ = 'materialized_view'
+
+    def __init__(self, inner_model, selectable):
+        self.mv_selectable = selectable
+        self.inner_table = inner_model.__table__
+
+        super(MaterializedView, self).__init__()
+
+        table = inner_model.__table__
+        metadata = self.inner_table.metadata
+
+        metadata.info.setdefault('mat_views', set()).add(table.name)
+        if not hasattr(metadata, 'mat_views'):
+            metadata.mat_views = {}
+        metadata.mat_views[table.name] = self
+
+    @property
+    def bind(self):
+        return self.inner_table.metadata.bind
+
+    @property
+    def name(self):
+        return self.inner_table.name
+
+    # TODO: args
+    def __new__(cls, inner_model, selectable):
+        table = inner_model.__table__
+
+        rv = object.__new__(cls)
+        rv.__init__(inner_model, selectable)
+
+        # TODO: use include_object
+        inner_model.metadata._remove_table(table.name, table.schema)
+        return rv
+
+    def create(self, bind=None, checkfirst=False):
+        if bind is None:
+            bind = _bind_or_error(self)
+        bind._run_visitor(ddl.SchemaGenerator, self, checkfirst=checkfirst)
+
+    def drop(self, bind=None, checkfirst=False, if_exists=False):
+        if bind is None:
+            bind = _bind_or_error(self)
+        bind._run_visitor(ddl.SchemaDropper, self,
+                          checkfirst=checkfirst, if_exists=if_exists)

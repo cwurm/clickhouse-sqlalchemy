@@ -1,5 +1,6 @@
 from sqlalchemy.sql.ddl import (
-    SchemaDropper as SchemaDropperBase, DropTable as DropTableBase
+    SchemaDropper as SchemaDropperBase, DropTable as DropTableBase,
+    SchemaGenerator as SchemaGeneratorBase, _CreateDropBase, CreateColumn
 )
 from sqlalchemy.sql.expression import UnaryExpression
 from sqlalchemy.sql.operators import custom_op
@@ -19,6 +20,27 @@ class SchemaDropper(SchemaDropperBase):
 
     def visit_table(self, table, drop_ok=False, _is_metadata_operation=False):
         self.connection.execute(DropTable(table, if_exists=self.if_exists))
+
+
+class CreateMaterializedView(_CreateDropBase):
+    """Represent a CREATE MATERIALIZED VIEW statement."""
+
+    __visit_name__ = "create_materialized_view"
+
+    def __init__(self, element, if_exists=False):
+        self.if_exists = if_exists
+        self.on_cluster = element.dialect_options['clickhouse']['cluster']
+        super(CreateMaterializedView, self).__init__(element)
+        self.columns = [CreateColumn(column) for column in element.columns]
+
+
+class SchemaGenerator(SchemaGeneratorBase):
+    def __init__(self, dialect, connection, if_exists=False, **kwargs):
+        self.if_exists = if_exists
+        super(SchemaGenerator, self).__init__(dialect, connection, **kwargs)
+
+    def visit_materialized_view(self, table, **kwargs):
+        self.connection.execute(CreateMaterializedView(table))
 
 
 def ttl_delete(expr):
